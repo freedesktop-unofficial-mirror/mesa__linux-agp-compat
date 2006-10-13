@@ -1432,6 +1432,82 @@ unsigned long agp_generic_mask_memory(struct agp_bridge_data *bridge,
 EXPORT_SYMBOL(agp_generic_mask_memory);
 
 /*
+ * Use kmalloc if possible for the page list. Otherwise fall back to
+ * vmalloc. This speeds things up and also saves memory for small AGP
+ * regions.
+ */
+
+static struct agp_memory *agp_create_drm_memory(unsigned long num_agp_pages)
+{
+	struct agp_memory *new;
+	unsigned long alloc_size = num_agp_pages*sizeof(struct page *);
+
+	new = kmalloc(sizeof(struct agp_memory), GFP_KERNEL);
+
+	if (new == NULL)
+		return NULL;
+
+	memset(new, 0, sizeof(struct agp_memory));
+	new->key = agp_get_key();
+
+	if (new->key < 0) {
+		kfree(new);
+		return NULL;
+	}
+
+	if (alloc_size <= 4*PAGE_SIZE) {
+		new->memory = kmalloc(alloc_size, GFP_KERNEL);
+	}
+	if (new->memory == NULL) {
+		new->memory = vmalloc(alloc_size);
+	} 
+	if (new->memory == NULL) {
+		agp_free_key(new->key);
+		kfree(new);
+		return NULL;
+	}
+	new->num_scratch_pages = 0;
+	return new;
+}	
+
+struct agp_memory *agp_generic_alloc_user(size_t page_count, int type)
+{
+	struct agp_memory *new;
+	int i;
+	int pages;
+
+	pages = (page_count + ENTRIES_PER_PAGE - 1) / ENTRIES_PER_PAGE;
+	new = agp_create_drm_memory(page_count);
+	if (new == NULL) 
+		return NULL;
+
+	for (i = 0; i < page_count; i++) {
+		new->memory[i] = 0;
+	}
+	new->page_count = 0;
+	new->type = type;
+	new->num_scratch_pages = pages;
+
+	return new;
+}
+EXPORT_SYMBOL(agp_generic_alloc_user);
+
+
+
+void agp_generic_free_user(struct agp_memory *curr)
+{
+	if ((unsigned long) curr->memory >= VMALLOC_START 
+	    && (unsigned long) curr->memory < VMALLOC_END) {
+		vfree(curr->memory);
+	} else {
+		kfree(curr->memory);
+	}
+	agp_free_key(curr->key);
+	kfree(curr);
+}
+EXPORT_SYMBOL(agp_generic_free_user);
+
+/*
  * These functions are implemented according to the AGPv3 spec,
  * which covers implementation details that had previously been
  * left open.
