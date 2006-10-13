@@ -9,7 +9,7 @@ KDIR := /lib/modules/$(shell uname -r)/build
 PWD := $(shell pwd)
 
 default:
-	$(CC) -I. -static -o testgart testgart.c
+	$(CC) -I. -o testgart testgart.c
 	$(MAKE) -C $(KDIR) SUBDIRS=$(PWD) modules
 endif
 
