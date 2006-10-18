@@ -89,7 +89,17 @@ struct agp_memory {
 	u8 is_flushed;
 };
 
+/*
+ * Types with numbers above this are always user populated.
+ */
+
+#define AGP_USER_TYPES (1 << 16)
+
+
 #define AGP_NORMAL_MEMORY 0
+#define AGP_USER_MEMORY (AGP_USER_TYPES)
+#define AGP_USER_CACHED_MEMORY (AGP_USER_TYPES + 1)
+
 
 extern struct agp_bridge_data *agp_bridge;
 extern struct list_head agp_bridges;

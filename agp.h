@@ -29,6 +29,17 @@
 #ifndef _AGP_BACKEND_PRIV_H
 #define _AGP_BACKEND_PRIV_H 1
 
+/*
+ * Remove this for kernel update.
+ */
+
+
+#ifndef AGP_USER_TYPES
+#define AGP_USER_TYPES (1 << 16)
+#define AGP_USER_MEMORY (AGP_USER_TYPES)
+#define AGP_USER_CACHED_MEMORY (AGP_USER_TYPES + 1)
+#endif
+
 #include <asm/agp.h>	/* for flush_agp_cache() */
 
 #define PFX "agpgart: "
@@ -114,6 +125,7 @@ struct agp_bridge_driver {
 	void (*free_by_type)(struct agp_memory *);
 	void *(*agp_alloc_page)(struct agp_bridge_data *);
 	void (*agp_destroy_page)(void *);
+        int (*agp_type_to_mask_type) (struct agp_bridge_data *, int);
 };
 
 struct agp_bridge_data {
@@ -267,6 +279,8 @@ void global_cache_flush(void);
 void get_agp_version(struct agp_bridge_data *bridge);
 unsigned long agp_generic_mask_memory(struct agp_bridge_data *bridge,
 	unsigned long addr, int type);
+int agp_generic_type_to_mask_type(struct agp_bridge_data *bridge,
+				  int type);
 struct agp_bridge_data *agp_generic_find_bridge(struct pci_dev *pdev);
 
 /* generic functions for user-populated AGP memory types */

@@ -101,6 +101,45 @@ static int agp_get_key(void)
 	return -1;
 }
 
+/*
+ * Use kmalloc if possible for the page list. Otherwise fall back to
+ * vmalloc. This speeds things up and also saves memory for small AGP
+ * regions.
+ */
+
+static struct agp_memory *agp_create_user_memory(unsigned long num_agp_pages)
+{
+	struct agp_memory *new;
+	unsigned long alloc_size = num_agp_pages*sizeof(struct page *);
+
+	new = kmalloc(sizeof(struct agp_memory), GFP_KERNEL);
+
+	if (new == NULL)
+		return NULL;
+
+	memset(new, 0, sizeof(struct agp_memory));
+	new->key = agp_get_key();
+
+	if (new->key < 0) {
+		kfree(new);
+		return NULL;
+	}
+
+	if (alloc_size <= 4*PAGE_SIZE) {
+		new->memory = kmalloc(alloc_size, GFP_KERNEL);
+	}
+	if (new->memory == NULL) {
+		new->memory = vmalloc(alloc_size);
+	} 
+	if (new->memory == NULL) {
+		agp_free_key(new->key);
+		kfree(new);
+		return NULL;
+	}
+	new->num_scratch_pages = 0;
+	return new;
+}	
+
 
 struct agp_memory *agp_create_memory(int scratch_pages)
 {
@@ -146,6 +185,10 @@ void agp_free_memory(struct agp_memory *curr)
 	if (curr->is_bound == TRUE)
 		agp_unbind_memory(curr);
 
+	if (curr->type >= AGP_USER_TYPES) {
+		agp_generic_free_user(curr);
+	}
+
 	if (curr->type != 0) {
 		curr->bridge->driver->free_by_type(curr);
 		return;
@@ -188,6 +231,13 @@ struct agp_memory *agp_allocate_memory(struct agp_bridge_data *bridge,
 	if ((atomic_read(&bridge->current_memory_agp) + page_count) > bridge->max_memory_agp)
 		return NULL;
 
+	if (type >= AGP_USER_TYPES) {
+		new = agp_generic_alloc_user(page_count, type);
+		if (new)
+			new->bridge = bridge;
+		return new;
+	}
+		
 	if (type != 0) {
 		new = bridge->driver->alloc_by_type(page_count, type);
 		if (new)
@@ -923,6 +973,7 @@ int agp_generic_insert_memory(struct agp_memory * mem, off_t pg_start, int type)
 	off_t j;
 	void *temp;
 	struct agp_bridge_data *bridge;
+	int mask_type;
 
 	bridge = mem->bridge;
 	if (!bridge)
@@ -955,7 +1006,12 @@ int agp_generic_insert_memory(struct agp_memory * mem, off_t pg_start, int type)
 	num_entries -= agp_memory_reserved/PAGE_SIZE;
 	if (num_entries < 0) num_entries = 0;
 
-	if (type != 0 || mem->type != 0) {
+	if (type != mem->type) {
+		return -EINVAL;
+	}
+
+	mask_type = bridge->driver->agp_type_to_mask_type(bridge, type);
+	if (mask_type != 0) {
 		/* The generic routines know nothing of memory types */
 		return -EINVAL;
 	}
@@ -963,6 +1019,9 @@ int agp_generic_insert_memory(struct agp_memory * mem, off_t pg_start, int type)
 	/* AK: could wrap */
 	if ((pg_start + mem->page_count) > num_entries)
 		return -EINVAL;
+
+	if (mem->page_count == 0)
+		return 0;
 
 	j = pg_start;
 
@@ -978,11 +1037,12 @@ int agp_generic_insert_memory(struct agp_memory * mem, off_t pg_start, int type)
 	}
 
 	for (i = 0, j = pg_start; i < mem->page_count; i++, j++) {
-		writel(bridge->driver->mask_memory(bridge, mem->memory[i], mem->type), bridge->gatt_table+j);
-		readl(bridge->gatt_table+j);	/* PCI Posting. */
+		writel(bridge->driver->mask_memory(bridge, mem->memory[i], mask_type), bridge->gatt_table+j);
 	}
+	readl(bridge->gatt_table+j-1);	/* PCI Posting. */
 
 	bridge->driver->tlb_flush(mem);
+	mem->is_flushed = FALSE;
 	return 0;
 }
 EXPORT_SYMBOL(agp_generic_insert_memory);
@@ -992,12 +1052,21 @@ int agp_generic_remove_memory(struct agp_memory *mem, off_t pg_start, int type)
 {
 	size_t i;
 	struct agp_bridge_data *bridge;
+	int mask_type;
 
 	bridge = mem->bridge;
 	if (!bridge)
 		return -EINVAL;
 
-	if (type != 0 || mem->type != 0) {
+	if (type != mem->type) {
+		return -EINVAL;
+	}
+
+	if (mem->page_count == 0)
+		return 0;
+
+	mask_type = bridge->driver->agp_type_to_mask_type(bridge, type);
+	if (mask_type != 0) {
 		/* The generic routines know nothing of memory types */
 		return -EINVAL;
 	}
@@ -1005,10 +1074,9 @@ int agp_generic_remove_memory(struct agp_memory *mem, off_t pg_start, int type)
 	/* AK: bogus, should encode addresses > 4GB */
 	for (i = pg_start; i < (mem->page_count + pg_start); i++) {
 		writel(bridge->scratch_page, bridge->gatt_table+i);
-		readl(bridge->gatt_table+i);	/* PCI Posting. */
 	}
+	readl(bridge->gatt_table+i-1);	/* PCI Posting. */
 
-	global_cache_flush();
 	bridge->driver->tlb_flush(mem);
 	return 0;
 }
@@ -1029,6 +1097,42 @@ void agp_generic_free_by_type(struct agp_memory *curr)
 	kfree(curr);
 }
 EXPORT_SYMBOL(agp_generic_free_by_type);
+
+struct agp_memory *agp_generic_alloc_user(size_t page_count, int type)
+{
+	struct agp_memory *new;
+	int i;
+	int pages;
+
+	pages = (page_count + ENTRIES_PER_PAGE - 1) / ENTRIES_PER_PAGE;
+	new = agp_create_user_memory(page_count);
+	if (new == NULL) 
+		return NULL;
+
+	for (i = 0; i < page_count; i++) {
+		new->memory[i] = 0;
+	}
+	new->page_count = 0;
+	new->type = type;
+	new->num_scratch_pages = pages;
+
+	return new;
+}
+EXPORT_SYMBOL(agp_generic_alloc_user);
+
+
+void agp_generic_free_user(struct agp_memory *curr)
+{
+	if ((unsigned long) curr->memory >= VMALLOC_START 
+	    && (unsigned long) curr->memory < VMALLOC_END) {
+		vfree(curr->memory);
+	} else {
+		kfree(curr->memory);
+	}
+	agp_free_key(curr->key);
+	kfree(curr);
+}
+EXPORT_SYMBOL(agp_generic_free_user);
 
 
 /*
@@ -1123,81 +1227,14 @@ unsigned long agp_generic_mask_memory(struct agp_bridge_data *bridge,
 }
 EXPORT_SYMBOL(agp_generic_mask_memory);
 
-/*
- * Use kmalloc if possible for the page list. Otherwise fall back to
- * vmalloc. This speeds things up and also saves memory for small AGP
- * regions.
- */
-
-static struct agp_memory *agp_create_drm_memory(unsigned long num_agp_pages)
+int agp_generic_type_to_mask_type(struct agp_bridge_data *bridge,
+				  int type)
 {
-	struct agp_memory *new;
-	unsigned long alloc_size = num_agp_pages*sizeof(struct page *);
-
-	new = kmalloc(sizeof(struct agp_memory), GFP_KERNEL);
-
-	if (new == NULL)
-		return NULL;
-
-	memset(new, 0, sizeof(struct agp_memory));
-	new->key = agp_get_key();
-
-	if (new->key < 0) {
-		kfree(new);
-		return NULL;
-	}
-
-	if (alloc_size <= 4*PAGE_SIZE) {
-		new->memory = kmalloc(alloc_size, GFP_KERNEL);
-	}
-	if (new->memory == NULL) {
-		new->memory = vmalloc(alloc_size);
-	} 
-	if (new->memory == NULL) {
-		agp_free_key(new->key);
-		kfree(new);
-		return NULL;
-	}
-	new->num_scratch_pages = 0;
-	return new;
-}	
-
-struct agp_memory *agp_generic_alloc_user(size_t page_count, int type)
-{
-	struct agp_memory *new;
-	int i;
-	int pages;
-
-	pages = (page_count + ENTRIES_PER_PAGE - 1) / ENTRIES_PER_PAGE;
-	new = agp_create_drm_memory(page_count);
-	if (new == NULL) 
-		return NULL;
-
-	for (i = 0; i < page_count; i++) {
-		new->memory[i] = 0;
-	}
-	new->page_count = 0;
-	new->type = type;
-	new->num_scratch_pages = pages;
-
-	return new;
+	if (type >= AGP_USER_TYPES)
+		return 0;
+	return type;
 }
-EXPORT_SYMBOL(agp_generic_alloc_user);
-
-
-
-void agp_generic_free_user(struct agp_memory *curr)
-{
-	if ((unsigned long) curr->memory >= VMALLOC_START 
-	    && (unsigned long) curr->memory < VMALLOC_END) {
-		vfree(curr->memory);
-	} else {
-		kfree(curr->memory);
-	}
-	agp_free_key(curr->key);
-	kfree(curr);
-}
-EXPORT_SYMBOL(agp_generic_free_user);
+EXPORT_SYMBOL(agp_generic_type_to_mask_type);
 
 /*
  * These functions are implemented according to the AGPv3 spec,

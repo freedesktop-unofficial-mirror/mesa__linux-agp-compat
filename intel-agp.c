@@ -62,14 +62,12 @@ static struct aper_size_info_fixed intel_i810_sizes[] =
 
 #define AGP_DCACHE_MEMORY	1
 #define AGP_PHYS_MEMORY		2
-#define INTEL_AGP_USER_MEMORY   3
-#define INTEL_AGP_CACHED_MEMORY 4
+#define INTEL_AGP_CACHED_MEMORY 3
 
 static struct gatt_mask intel_i810_masks[] =
 {
 	{.mask = I810_PTE_VALID, .type = 0},
 	{.mask = (I810_PTE_VALID | I810_PTE_LOCAL), .type = AGP_DCACHE_MEMORY},
-	{.mask = I810_PTE_VALID, .type = 0},
 	{.mask = I810_PTE_VALID, .type = 0},
 	{.mask = I810_PTE_VALID | I830_PTE_SYSTEM_CACHED, 
 	 .type = INTEL_AGP_CACHED_MEMORY}
@@ -81,136 +79,6 @@ static struct _intel_i810_private {
 	int num_dcache_entries;
 } intel_i810_private;
 
-
-/*
- * Note that agp_generic_mask_memory always defaults to memory type 0,
- * so we don't need to provide a specialization for that function to support 
- * INTEL_AGP_USER_MEMORY.
- */
-
-static int intel_generic_insert_memory(struct agp_memory * mem, 
-				       off_t pg_start, int type)
-{
-	int num_entries;
-	size_t i;
-	off_t j;
-	void *temp;
-	struct agp_bridge_data *bridge;
-	int ret = -EINVAL;
-       
-	if (mem->page_count == 0)
-		goto out;
-
-	bridge = mem->bridge;
-	if (!bridge)
-		goto out_err;
-
-	temp = bridge->current_size;
-
-	switch (bridge->driver->size_type) {
-	case U8_APER_SIZE:
-		num_entries = A_SIZE_8(temp)->num_entries;
-		break;
-	case U16_APER_SIZE:
-		num_entries = A_SIZE_16(temp)->num_entries;
-		break;
-	case U32_APER_SIZE:
-		num_entries = A_SIZE_32(temp)->num_entries;
-		break;
-	case FIXED_APER_SIZE:
-		num_entries = A_SIZE_FIX(temp)->num_entries;
-		break;
-	case LVL2_APER_SIZE:
-		/* The generic routines can't deal with 2 level gatt's */
-		goto out_err;
-		break;
-	default:
-		num_entries = 0;
-		break;
-	}
-
-	num_entries -= agp_memory_reserved/PAGE_SIZE;
-	if (num_entries < 0) num_entries = 0;
-
-	if (type != mem->type) 
-		goto out_err;
-
-	if (type != 0 && 
-	    type != INTEL_AGP_USER_MEMORY)
-		goto out_err;
-
-	if ((pg_start + mem->page_count) > num_entries)
-		goto out_err;
-
-	j = pg_start;
-
-	while (j < (pg_start + mem->page_count)) {
-		if (!PGE_EMPTY(bridge, readl(bridge->gatt_table+j))) {
-			ret = -EBUSY;
-			goto out_err;
-		}
-		j++;
-	}
-
-	if (!mem->is_flushed)
-		global_cache_flush();
-
-	for (i = 0, j = pg_start; i < mem->page_count; i++, j++) {
-		writel(bridge->driver->mask_memory(bridge, mem->memory[i], 
-						   mem->type), bridge->gatt_table+j);
-	}
-	readl(bridge->gatt_table+mem->page_count-1);
-	bridge->driver->tlb_flush(mem);
- out:
-	ret = 0;
- out_err:
-	mem->is_flushed = 0;
-	return ret;
-}
-
-
-static int intel_generic_remove_memory(struct agp_memory *mem, 
-				       off_t pg_start, int type)
-{
-	size_t i;
-	struct agp_bridge_data *bridge;
-
-	bridge = mem->bridge;
-	if (!bridge)
-		return -EINVAL;
-
-	if (type != mem->type) 
-		return -EINVAL;
-
-	if (type != 0 && type != INTEL_AGP_USER_MEMORY) 
-		return -EINVAL;
-
-	if (mem->page_count == 0)
-		return 0;
-
-	for (i = pg_start; i < (mem->page_count + pg_start); i++) {
-		writel(bridge->scratch_page, bridge->gatt_table+i);
-	}
-	readl(bridge->gatt_table+mem->page_count - 1);
-
-	bridge->driver->tlb_flush(mem);
-	return 0;
-}
-
-static struct agp_memory *intel_generic_alloc_by_type(size_t pg_count, int type)
-{
-	if (type == INTEL_AGP_USER_MEMORY) 
-		return agp_generic_alloc_user(pg_count, type);
-	return NULL;
-}
-
-static void intel_generic_free_by_type(struct agp_memory *curr)
-{
-	agp_free_key(curr->key);
-	if (curr->type == INTEL_AGP_USER_MEMORY) {
-		agp_generic_free_user(curr);
-	}
-}
 
 static int intel_i810_fetch_size(void)
 {
@@ -331,12 +199,24 @@ static void i8xx_destroy_pages(void *addr)
 	atomic_dec(&agp_bridge->current_memory_agp);
 }
 
+static int intel_i830_type_to_mask_type(struct agp_bridge_data *bridge,
+					int type)
+{
+	if (type < AGP_USER_TYPES) 
+		return type;
+	else if (type == AGP_USER_CACHED_MEMORY)
+		return INTEL_AGP_CACHED_MEMORY;
+	else
+		return 0;
+}
+
 static int intel_i810_insert_entries(struct agp_memory *mem, off_t pg_start,
 				int type)
 {
 	int i, j, num_entries;
 	void *temp;
 	int ret = -EINVAL;
+	int mask_type;
 
 	if (mem->page_count == 0)
 		goto out;
@@ -358,7 +238,9 @@ static int intel_i810_insert_entries(struct agp_memory *mem, off_t pg_start,
 	if (type != mem->type)
 		goto out_err;
 
-	switch (type) {
+	mask_type = agp_bridge->driver->agp_type_to_mask_type(agp_bridge, type);
+
+	switch (mask_type) {
 	case AGP_DCACHE_MEMORY:
 		if (!mem->is_flushed) 
 			global_cache_flush();
@@ -369,12 +251,12 @@ static int intel_i810_insert_entries(struct agp_memory *mem, off_t pg_start,
 		readl(intel_i810_private.registers+I810_PTE_BASE+((i-1)*4));
 		break;
 	case AGP_PHYS_MEMORY:
-	case INTEL_AGP_USER_MEMORY:
 		if (!mem->is_flushed) 
 			global_cache_flush();
 		for (i = 0, j = pg_start; i < mem->page_count; i++, j++) {
 			writel(agp_bridge->driver->mask_memory(agp_bridge,
-							       mem->memory[i], mem->type),
+							       mem->memory[i],
+							       mask_type),
 			       intel_i810_private.registers+I810_PTE_BASE+(j*4));
 		}
 		readl(intel_i810_private.registers+I810_PTE_BASE+((j-1)*4));
@@ -474,8 +356,6 @@ static struct agp_memory *intel_i810_alloc_by_type(size_t pg_count, int type)
 	}
 	if (type == AGP_PHYS_MEMORY)
 		return alloc_agpphysmem_i8xx(pg_count, type);
-	else if (type == INTEL_AGP_USER_MEMORY)
-		return agp_generic_alloc_user(pg_count, type);
 	return NULL;
 }
 
@@ -491,10 +371,6 @@ static void intel_i810_free_by_type(struct agp_memory *curr)
 			global_flush_tlb();
 		}
 		vfree(curr->memory);
-	} else if (curr->type == INTEL_AGP_USER_MEMORY ||
-		   curr->type == INTEL_AGP_CACHED_MEMORY) {
-		agp_generic_free_user(curr);
-		return;
 	}
 	kfree(curr);
 }
@@ -724,6 +600,7 @@ static int intel_i830_insert_entries(struct agp_memory *mem,off_t pg_start, int 
 	int i,j,num_entries;
 	void *temp;
 	int ret = -EINVAL;
+	int mask_type;
 
 	temp = agp_bridge->current_size;
 	num_entries = A_SIZE_FIX(temp)->num_entries;
@@ -748,9 +625,10 @@ static int intel_i830_insert_entries(struct agp_memory *mem,off_t pg_start, int 
 	if (type != mem->type)
 		goto out_err;
 
-	if (type != 0 && type != AGP_PHYS_MEMORY && 
-	    type != INTEL_AGP_USER_MEMORY &&
-	    type != INTEL_AGP_CACHED_MEMORY)
+	mask_type = agp_bridge->driver->agp_type_to_mask_type(agp_bridge, type);
+
+	if (mask_type != 0 && mask_type != AGP_PHYS_MEMORY && 
+	    mask_type != INTEL_AGP_CACHED_MEMORY)
 		goto out_err;
 
 	if (!mem->is_flushed)
@@ -758,7 +636,7 @@ static int intel_i830_insert_entries(struct agp_memory *mem,off_t pg_start, int 
 
 	for (i = 0, j = pg_start; i < mem->page_count; i++, j++) {
 		writel(agp_bridge->driver->mask_memory(agp_bridge,
-						       mem->memory[i], mem->type),
+						       mem->memory[i], mask_type),
 		       intel_i830_private.registers+I810_PTE_BASE+(j*4));
 	}
 	readl(intel_i830_private.registers+I810_PTE_BASE+((j-1)*4));
@@ -794,10 +672,6 @@ static struct agp_memory *intel_i830_alloc_by_type(size_t pg_count,int type)
 {
 	if (type == AGP_PHYS_MEMORY)
 		return alloc_agpphysmem_i8xx(pg_count, type);
-	else if (type == INTEL_AGP_USER_MEMORY ||
-		 type == INTEL_AGP_CACHED_MEMORY)
-		return agp_generic_alloc_user(pg_count, type);
-
 	/* always return NULL for other allocation types for now */
 	return NULL;
 }
@@ -845,6 +719,7 @@ static int intel_i915_insert_entries(struct agp_memory *mem,off_t pg_start,
 	int i,j,num_entries;
 	void *temp;
 	int ret = -EINVAL;
+	int mask_type;
 
 	if (mem->page_count == 0)
 		goto out;
@@ -863,15 +738,16 @@ static int intel_i915_insert_entries(struct agp_memory *mem,off_t pg_start,
 	if ((pg_start + mem->page_count) > num_entries)
 		goto out_err;
 
-	/* The i830 can't check the GTT for entries since its read only,
+	/* The i915 can't check the GTT for entries since its read only,
 	 * depend on the caller to make the correct offset decisions.
 	 */
 	
 	if (type != mem->type) 
 		goto out_err;
 
-	if (type != 0 && type != AGP_PHYS_MEMORY && 
-	    type != INTEL_AGP_USER_MEMORY &&
+	mask_type = agp_bridge->driver->agp_type_to_mask_type(agp_bridge, type);
+
+	if (mask_type != 0 && mask_type != AGP_PHYS_MEMORY && 
 	    type != INTEL_AGP_CACHED_MEMORY)
 		goto out_err;
 	
@@ -880,7 +756,7 @@ static int intel_i915_insert_entries(struct agp_memory *mem,off_t pg_start,
 
 	for (i = 0, j = pg_start; i < mem->page_count; i++, j++) {
 		writel(agp_bridge->driver->mask_memory(agp_bridge,
-			mem->memory[i], mem->type), intel_i830_private.gtt+j);
+			mem->memory[i], mask_type), intel_i830_private.gtt+j);
 	}
 	readl(intel_i830_private.gtt+j-1);
 	agp_bridge->driver->tlb_flush(mem);
@@ -1426,12 +1302,13 @@ static struct agp_bridge_driver intel_generic_driver = {
 	.cache_flush		= global_cache_flush,
 	.create_gatt_table	= agp_generic_create_gatt_table,
 	.free_gatt_table	= agp_generic_free_gatt_table,
-	.insert_memory		= intel_generic_insert_memory,
-	.remove_memory		= intel_generic_remove_memory,
-	.alloc_by_type		= intel_generic_alloc_by_type,
-	.free_by_type		= intel_generic_free_by_type,
+	.insert_memory		= agp_generic_insert_memory,
+	.remove_memory		= agp_generic_remove_memory,
+	.alloc_by_type		= agp_generic_alloc_by_type,
+	.free_by_type		= agp_generic_free_by_type,
 	.agp_alloc_page		= agp_generic_alloc_page,
 	.agp_destroy_page	= agp_generic_destroy_page,
+	.agp_type_to_mask_type  = agp_generic_type_to_mask_type,
 };
 
 static struct agp_bridge_driver intel_810_driver = {
@@ -1456,6 +1333,7 @@ static struct agp_bridge_driver intel_810_driver = {
 	.free_by_type		= intel_i810_free_by_type,
 	.agp_alloc_page		= agp_generic_alloc_page,
 	.agp_destroy_page	= agp_generic_destroy_page,
+	.agp_type_to_mask_type  = agp_generic_type_to_mask_type,
 };
 
 static struct agp_bridge_driver intel_815_driver = {
@@ -1473,12 +1351,13 @@ static struct agp_bridge_driver intel_815_driver = {
 	.cache_flush		= global_cache_flush,
 	.create_gatt_table	= agp_generic_create_gatt_table,
 	.free_gatt_table	= agp_generic_free_gatt_table,
-	.insert_memory		= intel_generic_insert_memory,
-	.remove_memory		= intel_generic_remove_memory,
-	.alloc_by_type		= intel_generic_alloc_by_type,
-	.free_by_type		= intel_generic_free_by_type,
+	.insert_memory		= agp_generic_insert_memory,
+	.remove_memory		= agp_generic_remove_memory,
+	.alloc_by_type		= agp_generic_alloc_by_type,
+	.free_by_type		= agp_generic_free_by_type,
 	.agp_alloc_page		= agp_generic_alloc_page,
 	.agp_destroy_page	= agp_generic_destroy_page,
+	.agp_type_to_mask_type  = agp_generic_type_to_mask_type,
 };
 
 static struct agp_bridge_driver intel_830_driver = {
@@ -1503,6 +1382,7 @@ static struct agp_bridge_driver intel_830_driver = {
 	.free_by_type		= intel_i810_free_by_type,
 	.agp_alloc_page		= agp_generic_alloc_page,
 	.agp_destroy_page	= agp_generic_destroy_page,
+	.agp_type_to_mask_type  = intel_i830_type_to_mask_type,
 };
 
 static struct agp_bridge_driver intel_820_driver = {
@@ -1520,12 +1400,13 @@ static struct agp_bridge_driver intel_820_driver = {
 	.cache_flush		= global_cache_flush,
 	.create_gatt_table	= agp_generic_create_gatt_table,
 	.free_gatt_table	= agp_generic_free_gatt_table,
-	.insert_memory		= intel_generic_insert_memory,
-	.remove_memory		= intel_generic_remove_memory,
-	.alloc_by_type		= intel_generic_alloc_by_type,
-	.free_by_type		= intel_generic_free_by_type,
+	.insert_memory		= agp_generic_insert_memory,
+	.remove_memory		= agp_generic_remove_memory,
+	.alloc_by_type		= agp_generic_alloc_by_type,
+	.free_by_type		= agp_generic_free_by_type,
 	.agp_alloc_page		= agp_generic_alloc_page,
 	.agp_destroy_page	= agp_generic_destroy_page,
+	.agp_type_to_mask_type  = agp_generic_type_to_mask_type,
 };
 
 static struct agp_bridge_driver intel_830mp_driver = {
@@ -1543,12 +1424,13 @@ static struct agp_bridge_driver intel_830mp_driver = {
 	.cache_flush		= global_cache_flush,
 	.create_gatt_table	= agp_generic_create_gatt_table,
 	.free_gatt_table	= agp_generic_free_gatt_table,
-	.insert_memory		= intel_generic_insert_memory,
-	.remove_memory		= intel_generic_remove_memory,
-	.alloc_by_type		= intel_generic_alloc_by_type,
-	.free_by_type		= intel_generic_free_by_type,
+	.insert_memory		= agp_generic_insert_memory,
+	.remove_memory		= agp_generic_remove_memory,
+	.alloc_by_type		= agp_generic_alloc_by_type,
+	.free_by_type		= agp_generic_free_by_type,
 	.agp_alloc_page		= agp_generic_alloc_page,
 	.agp_destroy_page	= agp_generic_destroy_page,
+	.agp_type_to_mask_type  = agp_generic_type_to_mask_type,
 };
 
 static struct agp_bridge_driver intel_840_driver = {
@@ -1566,12 +1448,13 @@ static struct agp_bridge_driver intel_840_driver = {
 	.cache_flush		= global_cache_flush,
 	.create_gatt_table	= agp_generic_create_gatt_table,
 	.free_gatt_table	= agp_generic_free_gatt_table,
-	.insert_memory		= intel_generic_insert_memory,
-	.remove_memory		= intel_generic_remove_memory,
-	.alloc_by_type		= intel_generic_alloc_by_type,
-	.free_by_type		= intel_generic_free_by_type,
+	.insert_memory		= agp_generic_insert_memory,
+	.remove_memory		= agp_generic_remove_memory,
+	.alloc_by_type		= agp_generic_alloc_by_type,
+	.free_by_type		= agp_generic_free_by_type,
 	.agp_alloc_page		= agp_generic_alloc_page,
 	.agp_destroy_page	= agp_generic_destroy_page,
+	.agp_type_to_mask_type  = agp_generic_type_to_mask_type,
 };
 
 static struct agp_bridge_driver intel_845_driver = {
@@ -1589,12 +1472,13 @@ static struct agp_bridge_driver intel_845_driver = {
 	.cache_flush		= global_cache_flush,
 	.create_gatt_table	= agp_generic_create_gatt_table,
 	.free_gatt_table	= agp_generic_free_gatt_table,
-	.insert_memory		= intel_generic_insert_memory,
-	.remove_memory		= intel_generic_remove_memory,
-	.alloc_by_type		= intel_generic_alloc_by_type,
-	.free_by_type		= intel_generic_free_by_type,
+	.insert_memory		= agp_generic_insert_memory,
+	.remove_memory		= agp_generic_remove_memory,
+	.alloc_by_type		= agp_generic_alloc_by_type,
+	.free_by_type		= agp_generic_free_by_type,
 	.agp_alloc_page		= agp_generic_alloc_page,
 	.agp_destroy_page	= agp_generic_destroy_page,
+	.agp_type_to_mask_type  = agp_generic_type_to_mask_type,
 };
 
 static struct agp_bridge_driver intel_850_driver = {
@@ -1612,12 +1496,13 @@ static struct agp_bridge_driver intel_850_driver = {
 	.cache_flush		= global_cache_flush,
 	.create_gatt_table	= agp_generic_create_gatt_table,
 	.free_gatt_table	= agp_generic_free_gatt_table,
-	.insert_memory		= intel_generic_insert_memory,
-	.remove_memory		= intel_generic_remove_memory,
-	.alloc_by_type		= intel_generic_alloc_by_type,
-	.free_by_type		= intel_generic_free_by_type,
+	.insert_memory		= agp_generic_insert_memory,
+	.remove_memory		= agp_generic_remove_memory,
+	.alloc_by_type		= agp_generic_alloc_by_type,
+	.free_by_type		= agp_generic_free_by_type,
 	.agp_alloc_page		= agp_generic_alloc_page,
 	.agp_destroy_page	= agp_generic_destroy_page,
+	.agp_type_to_mask_type  = agp_generic_type_to_mask_type,
 };
 
 static struct agp_bridge_driver intel_860_driver = {
@@ -1635,12 +1520,13 @@ static struct agp_bridge_driver intel_860_driver = {
 	.cache_flush		= global_cache_flush,
 	.create_gatt_table	= agp_generic_create_gatt_table,
 	.free_gatt_table	= agp_generic_free_gatt_table,
-	.insert_memory		= intel_generic_insert_memory,
-	.remove_memory		= intel_generic_remove_memory,
-	.alloc_by_type		= intel_generic_alloc_by_type,
-	.free_by_type		= intel_generic_free_by_type,
+	.insert_memory		= agp_generic_insert_memory,
+	.remove_memory		= agp_generic_remove_memory,
+	.alloc_by_type		= agp_generic_alloc_by_type,
+	.free_by_type		= agp_generic_free_by_type,
 	.agp_alloc_page		= agp_generic_alloc_page,
 	.agp_destroy_page	= agp_generic_destroy_page,
+	.agp_type_to_mask_type  = agp_generic_type_to_mask_type,
 };
 
 static struct agp_bridge_driver intel_915_driver = {
@@ -1665,6 +1551,7 @@ static struct agp_bridge_driver intel_915_driver = {
 	.free_by_type		= intel_i810_free_by_type,
 	.agp_alloc_page		= agp_generic_alloc_page,
 	.agp_destroy_page	= agp_generic_destroy_page,
+	.agp_type_to_mask_type  = intel_i830_type_to_mask_type,
 };
 
 
@@ -1683,12 +1570,13 @@ static struct agp_bridge_driver intel_7505_driver = {
 	.cache_flush		= global_cache_flush,
 	.create_gatt_table	= agp_generic_create_gatt_table,
 	.free_gatt_table	= agp_generic_free_gatt_table,
-	.insert_memory		= intel_generic_insert_memory,
-	.remove_memory		= intel_generic_remove_memory,
-	.alloc_by_type		= intel_generic_alloc_by_type,
-	.free_by_type		= intel_generic_free_by_type,
+	.insert_memory		= agp_generic_insert_memory,
+	.remove_memory		= agp_generic_remove_memory,
+	.alloc_by_type		= agp_generic_alloc_by_type,
+	.free_by_type		= agp_generic_free_by_type,
 	.agp_alloc_page		= agp_generic_alloc_page,
 	.agp_destroy_page	= agp_generic_destroy_page,
+	.agp_type_to_mask_type  = agp_generic_type_to_mask_type,
 };
 
 static int find_i810(u16 device)
