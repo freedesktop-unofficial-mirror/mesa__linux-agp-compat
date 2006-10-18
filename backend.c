@@ -50,14 +50,6 @@ static struct agp_version agp_current_version =
 	.minor = AGPGART_VERSION_MINOR,
 };
 
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-static int agp_count=0;
-
-struct agp_bridge_data agp_bridge_dummy = { .type = NOT_SUPPORTED };
-struct agp_bridge_data *agp_bridge = &agp_bridge_dummy;
-EXPORT_SYMBOL(agp_bridge);
-#else
 struct agp_bridge_data *(*agp_find_bridge)(struct pci_dev *) =
 	&agp_generic_find_bridge;
 
@@ -66,24 +58,11 @@ LIST_HEAD(agp_bridges);
 EXPORT_SYMBOL(agp_bridge);
 EXPORT_SYMBOL(agp_bridges);
 EXPORT_SYMBOL(agp_find_bridge);
-#endif
-
 
 /**
  *	agp_backend_acquire  -  attempt to acquire an agp backend.
  *
  */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-int agp_backend_acquire(void)
-{
-	if (agp_bridge->type == NOT_SUPPORTED)
-		return -EINVAL;
-	if (atomic_read(&agp_bridge->agp_in_use))
-		return -EBUSY;
-	atomic_inc(&agp_bridge->agp_in_use);
-	return 0;
-}
-#else
 struct agp_bridge_data *agp_backend_acquire(struct pci_dev *pdev)
 {
 	struct agp_bridge_data *bridge;
@@ -98,7 +77,6 @@ struct agp_bridge_data *agp_backend_acquire(struct pci_dev *pdev)
 	atomic_inc(&bridge->agp_in_use);
 	return bridge;
 }
-#endif
 EXPORT_SYMBOL(agp_backend_acquire);
 
 
@@ -110,23 +88,16 @@ EXPORT_SYMBOL(agp_backend_acquire);
  *
  *	(Ensure that all memory it bound is unbound.)
  */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-void agp_backend_release(void)
-{
-	struct agp_bridge_data *bridge = agp_bridge;
-	if (bridge->type == NOT_SUPPORTED)
-		return;
-#else
 void agp_backend_release(struct agp_bridge_data *bridge)
 {
-#endif
+
 	if (bridge)
 		atomic_dec(&bridge->agp_in_use);
 }
 EXPORT_SYMBOL(agp_backend_release);
 
 
-static struct { int mem, agp; } maxes_table[] = {
+static const struct { int mem, agp; } maxes_table[] = {
 	{0, 0},
 	{32, 4},
 	{64, 28},
@@ -170,24 +141,17 @@ static int agp_backend_initialize(struct agp_bridge_data *bridge)
 	bridge->version = &agp_current_version;
 
 	if (bridge->driver->needs_scratch_page) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-		void *addr = bridge->driver->agp_alloc_page();
-#else
 		void *addr = bridge->driver->agp_alloc_page(bridge);
-#endif
 
 		if (!addr) {
 			printk(KERN_ERR PFX "unable to get memory for scratch page.\n");
 			return -ENOMEM;
 		}
+		flush_agp_mappings();
 
 		bridge->scratch_page_real = virt_to_gart(addr);
 		bridge->scratch_page =
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-		    bridge->driver->mask_memory(bridge->scratch_page_real, 0);
-#else
 		    bridge->driver->mask_memory(bridge, bridge->scratch_page_real, 0);
-#endif
 	}
 
 	size_value = bridge->driver->fetch_size();
@@ -196,11 +160,7 @@ static int agp_backend_initialize(struct agp_bridge_data *bridge)
 		rc = -EINVAL;
 		goto err_out;
 	}
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-	if (bridge->driver->create_gatt_table()) {
-#else
 	if (bridge->driver->create_gatt_table(bridge)) {
-#endif
 		printk(KERN_ERR PFX
 		    "unable to get memory for graphics translation table.\n");
 		rc = -ENOMEM;
@@ -228,15 +188,13 @@ static int agp_backend_initialize(struct agp_bridge_data *bridge)
 	return 0;
 
 err_out:
-	if (bridge->driver->needs_scratch_page)
+	if (bridge->driver->needs_scratch_page) {
 		bridge->driver->agp_destroy_page(
 				gart_to_virt(bridge->scratch_page_real));
+		flush_agp_mappings();
+	}
 	if (got_gatt)
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-		bridge->driver->free_gatt_table();
-#else
 		bridge->driver->free_gatt_table(bridge);
-#endif
 	if (got_keylist) {
 		vfree(bridge->key_list);
 		bridge->key_list = NULL;
@@ -250,32 +208,18 @@ static void agp_backend_cleanup(struct agp_bridge_data *bridge)
 	if (bridge->driver->cleanup)
 		bridge->driver->cleanup();
 	if (bridge->driver->free_gatt_table)
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-		bridge->driver->free_gatt_table();
-#else
 		bridge->driver->free_gatt_table(bridge);
-#endif
+
 	vfree(bridge->key_list);
 	bridge->key_list = NULL;
 
 	if (bridge->driver->agp_destroy_page &&
-	    bridge->driver->needs_scratch_page)
+	    bridge->driver->needs_scratch_page) {
 		bridge->driver->agp_destroy_page(
 				gart_to_virt(bridge->scratch_page_real));
+		flush_agp_mappings();
+	}
 }
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,11)
-static const drm_agp_t drm_agp = {
-	&agp_free_memory,
-	&agp_allocate_memory,
-	&agp_bind_memory,
-	&agp_unbind_memory,
-	&agp_enable,
-	&agp_backend_acquire,
-	&agp_backend_release,
-	&agp_copy_info
-};
-#endif
 
 /* When we remove the global variable agp_bridge from all drivers
  * then agp_alloc_bridge and agp_generic_find_bridge need to be updated
@@ -283,15 +227,12 @@ static const drm_agp_t drm_agp = {
 
 struct agp_bridge_data *agp_alloc_bridge(void)
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-	return agp_bridge;
-#else
-	struct agp_bridge_data *bridge = kmalloc(sizeof(*bridge), GFP_KERNEL);
+	struct agp_bridge_data *bridge;
 
+	bridge = kzalloc(sizeof(*bridge), GFP_KERNEL);
 	if (!bridge)
 		return NULL;
 
-	memset(bridge, 0, sizeof(*bridge));
 	atomic_set(&bridge->agp_in_use, 0);
 	atomic_set(&bridge->current_memory_agp, 0);
 
@@ -299,21 +240,16 @@ struct agp_bridge_data *agp_alloc_bridge(void)
 		agp_bridge = bridge;
 
 	return bridge;
-#endif
 }
 EXPORT_SYMBOL(agp_alloc_bridge);
 
 
 void agp_put_bridge(struct agp_bridge_data *bridge)
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-	return;
-#else
         kfree(bridge);
 
         if (list_empty(&agp_bridges))
                 agp_bridge = NULL;
-#endif
 }
 EXPORT_SYMBOL(agp_put_bridge);
 
@@ -342,36 +278,6 @@ int agp_add_bridge(struct agp_bridge_data *bridge)
 		goto err_out;
 	}
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-	bridge->type = SUPPORTED;
-
-	error = agp_backend_initialize(agp_bridge);
-	if (error) {
-		printk (KERN_INFO PFX "agp_backend_initialize() failed.\n");
-		goto err_out;
-	}
-
-	error = agp_frontend_initialize();
-	if (error) {
-		printk (KERN_INFO PFX "agp_frontend_initialize() failed.\n");
-		goto frontend_err;
-	}
-
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,11))
-	inter_module_register("drm_agp", THIS_MODULE, &drm_agp);
-#endif
-
-	agp_count++;
-	return 0;
-
-frontend_err:
-	agp_backend_cleanup(agp_bridge);
-err_out:
-	bridge->type = NOT_SUPPORTED;
-	module_put(bridge->driver->owner);
-	return error;
-
-#else 
 	if (list_empty(&agp_bridges)) {
 		error = agp_frontend_initialize();
 		if (error) {
@@ -393,28 +299,17 @@ err_out:
 	module_put(bridge->driver->owner);
 	agp_put_bridge(bridge);
 	return error;
-#endif 
 }
 EXPORT_SYMBOL_GPL(agp_add_bridge);
 
+
 void agp_remove_bridge(struct agp_bridge_data *bridge)
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-	bridge->type = NOT_SUPPORTED;
-	agp_frontend_cleanup();
-	agp_backend_cleanup(bridge);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,11)
-	inter_module_unregister("drm_agp");
-#endif
-	agp_count--;
-	module_put(bridge->driver->owner);
-#else
 	agp_backend_cleanup(bridge);
 	list_del(&bridge->list);
 	if (list_empty(&agp_bridges))
 		agp_frontend_cleanup();
 	module_put(bridge->driver->owner);
-#endif
 }
 EXPORT_SYMBOL_GPL(agp_remove_bridge);
 

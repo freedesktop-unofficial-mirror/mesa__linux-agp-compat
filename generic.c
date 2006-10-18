@@ -27,7 +27,6 @@
  * TODO:
  * - Allocate more than order 0 pages to avoid too much linear map splitting.
  */
-#include <linux/config.h>
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/init.h>
@@ -52,12 +51,13 @@ int agp_memory_reserved;
  */
 EXPORT_SYMBOL_GPL(agp_memory_reserved);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,11)
 #if defined(CONFIG_X86)
 int map_page_into_agp(struct page *page)
 {
 	int i;
 	i = change_page_attr(page, 1, PAGE_KERNEL_NOCACHE);
+	/* Caller's responsibility to call global_flush_tlb() for
+	 * performance reasons */
 	return i;
 }
 EXPORT_SYMBOL_GPL(map_page_into_agp);
@@ -66,10 +66,11 @@ int unmap_page_from_agp(struct page *page)
 {
 	int i;
 	i = change_page_attr(page, 1, PAGE_KERNEL);
+	/* Caller's responsibility to call global_flush_tlb() for
+	 * performance reasons */
 	return i;
 }
 EXPORT_SYMBOL_GPL(unmap_page_from_agp);
-#endif
 #endif
 
 /*
@@ -105,12 +106,10 @@ struct agp_memory *agp_create_memory(int scratch_pages)
 {
 	struct agp_memory *new;
 
-	new = kmalloc(sizeof(struct agp_memory), GFP_KERNEL);
-
+	new = kzalloc(sizeof(struct agp_memory), GFP_KERNEL);
 	if (new == NULL)
 		return NULL;
 
-	memset(new, 0, sizeof(struct agp_memory));
 	new->key = agp_get_key();
 
 	if (new->key < 0) {
@@ -140,10 +139,7 @@ EXPORT_SYMBOL(agp_create_memory);
 void agp_free_memory(struct agp_memory *curr)
 {
 	size_t i;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-	if (agp_bridge->type == NOT_SUPPORTED)
-		return;
-#endif
+
 	if (curr == NULL)
 		return;
 
@@ -151,21 +147,14 @@ void agp_free_memory(struct agp_memory *curr)
 		agp_unbind_memory(curr);
 
 	if (curr->type != 0) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-		agp_bridge->driver->free_by_type(curr);
-#else
 		curr->bridge->driver->free_by_type(curr);
-#endif
 		return;
 	}
 	if (curr->page_count != 0) {
 		for (i = 0; i < curr->page_count; i++) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-			agp_bridge->driver->agp_destroy_page(gart_to_virt(curr->memory[i]));
-#else
 			curr->bridge->driver->agp_destroy_page(gart_to_virt(curr->memory[i]));
-#endif
 		}
+		flush_agp_mappings();
 	}
 	agp_free_key(curr->key);
 	vfree(curr->memory);
@@ -186,17 +175,6 @@ EXPORT_SYMBOL(agp_free_memory);
  *
  *	It returns NULL whenever memory is unavailable.
  */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-struct agp_memory *agp_allocate_memory(size_t page_count, u32 type)
-{
-	struct agp_bridge_data *bridge = agp_bridge;
-	int scratch_pages;
-	struct agp_memory *new;
-	size_t i;
-	
-	if (bridge->type == NOT_SUPPORTED)
-		return NULL;
-#else
 struct agp_memory *agp_allocate_memory(struct agp_bridge_data *bridge,
 					size_t page_count, u32 type)
 {
@@ -206,17 +184,14 @@ struct agp_memory *agp_allocate_memory(struct agp_bridge_data *bridge,
 
 	if (!bridge)
 		return NULL;
-#endif
 
 	if ((atomic_read(&bridge->current_memory_agp) + page_count) > bridge->max_memory_agp)
 		return NULL;
 
 	if (type != 0) {
 		new = bridge->driver->alloc_by_type(page_count, type);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,12)
 		if (new)
 			new->bridge = bridge;
-#endif
 		return new;
 	}
 
@@ -228,11 +203,8 @@ struct agp_memory *agp_allocate_memory(struct agp_bridge_data *bridge,
 		return NULL;
 
 	for (i = 0; i < page_count; i++) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-		void *addr = bridge->driver->agp_alloc_page();
-#else
 		void *addr = bridge->driver->agp_alloc_page(bridge);
-#endif
+
 		if (addr == NULL) {
 			agp_free_memory(new);
 			return NULL;
@@ -240,9 +212,8 @@ struct agp_memory *agp_allocate_memory(struct agp_bridge_data *bridge,
 		new->memory[i] = virt_to_gart(addr);
 		new->page_count++;
 	}
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,12)
-         new->bridge = bridge;
-#endif
+	new->bridge = bridge;
+
 	flush_agp_mappings();
 
 	return new;
@@ -327,24 +298,11 @@ EXPORT_SYMBOL_GPL(agp_num_entries);
 /**
  *	agp_copy_info  -  copy bridge state information
  *
- *	@info:		agp_kern_info pointer.  The caller should insure that this pointer is valid. 
+ *	@info:		agp_kern_info pointer.  The caller should insure that this pointer is valid.
  *
  *	This function copies information about the agp bridge device and the state of
  *	the agp backend into an agp_kern_info pointer.
  */
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-int agp_copy_info(struct agp_kern_info *info)
-{
-	struct agp_bridge_data *bridge = agp_bridge;
-
-	memset(info, 0, sizeof(struct agp_kern_info));
-	if (!agp_bridge || agp_bridge->type == NOT_SUPPORTED ||
-	    !agp_bridge->version) {
-		info->chipset = NOT_SUPPORTED;
-		return -EIO;
-	}
-#else
 int agp_copy_info(struct agp_bridge_data *bridge, struct agp_kern_info *info)
 {
 	memset(info, 0, sizeof(struct agp_kern_info));
@@ -352,7 +310,7 @@ int agp_copy_info(struct agp_bridge_data *bridge, struct agp_kern_info *info)
 		info->chipset = NOT_SUPPORTED;
 		return -EIO;
 	}
-#endif
+
 	info->version.major = bridge->version->major;
 	info->version.minor = bridge->version->minor;
 	info->chipset = SUPPORTED;
@@ -392,12 +350,6 @@ EXPORT_SYMBOL(agp_copy_info);
 int agp_bind_memory(struct agp_memory *curr, off_t pg_start)
 {
 	int ret_val;
-	struct agp_bridge_data *bridge;
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-	if (agp_bridge->type == NOT_SUPPORTED)
-		return -EINVAL;
-#endif
 
 	if (curr == NULL)
 		return -EINVAL;
@@ -406,17 +358,11 @@ int agp_bind_memory(struct agp_memory *curr, off_t pg_start)
 		printk(KERN_INFO PFX "memory %p is already bound!\n", curr);
 		return -EINVAL;
 	}
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-	bridge = agp_bridge;
-#else
-	bridge = curr->bridge;
-#endif
 	if (curr->is_flushed == FALSE) {
-		bridge->driver->cache_flush();
+		curr->bridge->driver->cache_flush();
 		curr->is_flushed = TRUE;
 	}
-	ret_val = bridge->driver->insert_memory(curr, pg_start, curr->type);
+	ret_val = curr->bridge->driver->insert_memory(curr, pg_start, curr->type);
 
 	if (ret_val != 0)
 		return ret_val;
@@ -439,12 +385,6 @@ EXPORT_SYMBOL(agp_bind_memory);
 int agp_unbind_memory(struct agp_memory *curr)
 {
 	int ret_val;
-	struct agp_bridge_data *bridge;
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-	if (agp_bridge->type == NOT_SUPPORTED)
-		return -EINVAL;
-#endif
 
 	if (curr == NULL)
 		return -EINVAL;
@@ -454,13 +394,7 @@ int agp_unbind_memory(struct agp_memory *curr)
 		return -EINVAL;
 	}
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-	bridge = agp_bridge;
-#else
-	bridge = curr->bridge;
-#endif
-
-	ret_val = bridge->driver->remove_memory(curr, curr->pg_start, curr->type);
+	ret_val = curr->bridge->driver->remove_memory(curr, curr->pg_start, curr->type);
 
 	if (ret_val != 0)
 		return ret_val;
@@ -475,41 +409,13 @@ EXPORT_SYMBOL(agp_unbind_memory);
 
 
 /* Generic Agp routines - Start */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-
-static void agp_v2_parse_one(u32 *mode, u32 *cmd, u32 *tmp)
-{
-	/* disable SBA if it's not supported */
-	if (!((*cmd & AGPSTAT_SBA) && (*tmp & AGPSTAT_SBA) && (*mode & AGPSTAT_SBA)))
-		*cmd &= ~AGPSTAT_SBA;
-
-	/* Set speed */
-	if (!((*cmd & AGPSTAT2_4X) && (*tmp & AGPSTAT2_4X) && (*mode & AGPSTAT2_4X)))
-		*cmd &= ~AGPSTAT2_4X;
-
-	if (!((*cmd & AGPSTAT2_2X) && (*tmp & AGPSTAT2_2X) && (*mode & AGPSTAT2_2X)))
-		*cmd &= ~AGPSTAT2_2X;
-
-	if (!((*cmd & AGPSTAT2_1X) && (*tmp & AGPSTAT2_1X) && (*mode & AGPSTAT2_1X)))
-		*cmd &= ~AGPSTAT2_1X;
-
-	/* Now we know what mode it should be, clear out the unwanted bits. */
-	if (*cmd & AGPSTAT2_4X)
-		*cmd &= ~(AGPSTAT2_1X | AGPSTAT2_2X);	/* 4X */
-
-	if (*cmd & AGPSTAT2_2X)
-		*cmd &= ~(AGPSTAT2_1X | AGPSTAT2_4X);	/* 2X */
-
-	if (*cmd & AGPSTAT2_1X)
-		*cmd &= ~(AGPSTAT2_2X | AGPSTAT2_4X);	/* 1X */
-}
-#else
 static void agp_v2_parse_one(u32 *requested_mode, u32 *bridge_agpstat, u32 *vga_agpstat)
 {
 	u32 tmp;
 
 	if (*requested_mode & AGP2_RESERVED_MASK) {
-		printk(KERN_INFO PFX "reserved bits set in mode 0x%x. Fixed.\n", *requested_mode);
+		printk(KERN_INFO PFX "reserved bits set (%x) in mode 0x%x. Fixed.\n",
+			*requested_mode & AGP2_RESERVED_MASK, *requested_mode);
 		*requested_mode &= ~AGP2_RESERVED_MASK;
 	}
 
@@ -575,107 +481,20 @@ static void agp_v2_parse_one(u32 *requested_mode, u32 *bridge_agpstat, u32 *vga_
 	if (*bridge_agpstat & AGPSTAT2_1X)
 		*bridge_agpstat &= ~AGPSTAT_FW;
 }
-#endif
 
 /*
  * requested_mode = Mode requested by (typically) X.
  * bridge_agpstat = PCI_AGP_STATUS from agp bridge.
  * vga_agpstat = PCI_AGP_STATUS from graphic card.
  */
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-static void agp_v3_parse_one(u32 *mode, u32 *cmd, u32 *tmp)
-{
-	u32 origcmd=*cmd, origtmp=*tmp;
-
-	/* ARQSZ - Set the value to the maximum one.
-	 * Don't allow the mode register to override values. */
-	*cmd = ((*cmd & ~AGPSTAT_ARQSZ) |
-		max_t(u32,(*cmd & AGPSTAT_ARQSZ),(*tmp & AGPSTAT_ARQSZ)));
-
-	/* Calibration cycle.
-	 * Don't allow the mode register to override values. */
-	*cmd = ((*cmd & ~AGPSTAT_CAL_MASK) |
-		min_t(u32,(*cmd & AGPSTAT_CAL_MASK),(*tmp & AGPSTAT_CAL_MASK)));
-
-	/* SBA *must* be supported for AGP v3 */
-	*cmd |= AGPSTAT_SBA;
-
-	/*
-	 * Set speed.
-	 * Check for invalid speeds. This can happen when applications
-	 * written before the AGP 3.0 standard pass AGP2.x modes to AGP3 hardware
-	 */
-	if (*mode & AGPSTAT_MODE_3_0) {
-		/*
-		 * Caller hasn't a clue what its doing. We are in 3.0 mode,
-		 * have been passed a 3.0 mode, but with 2.x speed bits set.
-		 * AGP2.x 4x -> AGP3.0 4x.
-		 */
-		if (*mode & AGPSTAT2_4X) {
-			printk (KERN_INFO PFX "%s passes broken AGP3 flags (%x). Fixed.\n",
-						current->comm, *mode);
-			*mode &= ~AGPSTAT2_4X;
-			*mode |= AGPSTAT3_4X;
-		}
-	} else {
-		/*
-		 * The caller doesn't know what they are doing. We are in 3.0 mode,
-		 * but have been passed an AGP 2.x mode.
-		 * Convert AGP 1x,2x,4x -> AGP 3.0 4x.
-		 */
-		printk (KERN_INFO PFX "%s passes broken AGP2 flags (%x) in AGP3 mode. Fixed.\n",
-					current->comm, *mode);
-		*mode &= ~(AGPSTAT2_4X | AGPSTAT2_2X | AGPSTAT2_1X);
-		*mode |= AGPSTAT3_4X;
-	}
-
-	if (*mode & AGPSTAT3_8X) {
-		if (!(*cmd & AGPSTAT3_8X)) {
-			*cmd &= ~(AGPSTAT3_8X | AGPSTAT3_RSVD);
-			*cmd |= AGPSTAT3_4X;
-			printk ("%s requested AGPx8 but bridge not capable.\n", current->comm);
-			return;
-		}
-		if (!(*tmp & AGPSTAT3_8X)) {
-			*cmd &= ~(AGPSTAT3_8X | AGPSTAT3_RSVD);
-			*cmd |= AGPSTAT3_4X;
-			printk ("%s requested AGPx8 but graphic card not capable.\n", current->comm);
-			return;
-		}
-		/* All set, bridge & device can do AGP x8*/
-		*cmd &= ~(AGPSTAT3_4X | AGPSTAT3_RSVD);
-		return;
-
-	} else {
-
-		/*
-		 * If we didn't specify AGPx8, we can only do x4.
-		 * If the hardware can't do x4, we're up shit creek, and never
-		 *  should have got this far.
-		 */
-		*cmd &= ~(AGPSTAT3_8X | AGPSTAT3_RSVD);
-		if ((*cmd & AGPSTAT3_4X) && (*tmp & AGPSTAT3_4X))
-			*cmd |= AGPSTAT3_4X;
-		else {
-			printk (KERN_INFO PFX "Badness. Don't know which AGP mode to set. "
-							"[cmd:%x tmp:%x fell back to:- cmd:%x tmp:%x]\n",
-							origcmd, origtmp, *cmd, *tmp);
-			if (!(*cmd & AGPSTAT3_4X))
-				printk (KERN_INFO PFX "Bridge couldn't do AGP x4.\n");
-			if (!(*tmp & AGPSTAT3_4X))
-				printk (KERN_INFO PFX "Graphic card couldn't do AGP x4.\n");
-		}
-	}
-}
-#else
 static void agp_v3_parse_one(u32 *requested_mode, u32 *bridge_agpstat, u32 *vga_agpstat)
 {
 	u32 origbridge=*bridge_agpstat, origvga=*vga_agpstat;
 	u32 tmp;
 
 	if (*requested_mode & AGP3_RESERVED_MASK) {
-		printk(KERN_INFO PFX "reserved bits set in mode 0x%x. Fixed.\n", *requested_mode);
+		printk(KERN_INFO PFX "reserved bits set (%x) in mode 0x%x. Fixed.\n",
+			*requested_mode & AGP3_RESERVED_MASK, *requested_mode);
 		*requested_mode &= ~AGP3_RESERVED_MASK;
 	}
 
@@ -784,7 +603,6 @@ done:
 		*bridge_agpstat |= AGPSTAT2_1X;
 	}
 }
-#endif
 
 
 /**
@@ -796,53 +614,6 @@ done:
  * This function will hunt for an AGP graphics card, and try to match
  * the requested mode to the capabilities of both the bridge and the card.
  */
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-u32 agp_collect_device_status(u32 mode, u32 cmd)
-{
-	struct pci_dev *device = NULL;
-	u8 cap_ptr;
-	u32 tmp;
-	u32 agp3;
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,11)
-	for_each_pci_dev(device) {
-#else
-	while ((device = pci_find_device(PCI_ANY_ID, PCI_ANY_ID, device)) != NULL) {
-#endif
-		cap_ptr = pci_find_capability(device, PCI_CAP_ID_AGP);
-		if (!cap_ptr)
-			continue;
-
-		//FIXME: We should probably skip anything here that
-		// isn't an AGP graphic card.
-		/*
-		 * Ok, here we have a AGP device. Disable impossible
-		 * settings, and adjust the readqueue to the minimum.
-		 */
-		pci_read_config_dword(device, cap_ptr+PCI_AGP_STATUS, &tmp);
-
-		/* adjust RQ depth */
-		cmd = ((cmd & ~AGPSTAT_RQ_DEPTH) |
-		     min_t(u32, (mode & AGPSTAT_RQ_DEPTH),
-			 min_t(u32, (cmd & AGPSTAT_RQ_DEPTH), (tmp & AGPSTAT_RQ_DEPTH))));
-
-		/* disable FW if it's not supported */
-		if (!((cmd & AGPSTAT_FW) && (tmp & AGPSTAT_FW) && (mode & AGPSTAT_FW)))
-			cmd &= ~AGPSTAT_FW;
-
-		/* Check to see if we are operating in 3.0 mode */
-		pci_read_config_dword(device, cap_ptr+AGPSTAT, &agp3);
-		if (agp3 & AGPSTAT_MODE_3_0) {
-			agp_v3_parse_one(&mode, &cmd, &tmp);
-		} else {
-			agp_v2_parse_one(&mode, &cmd, &tmp);
-		}
-	}
-	return cmd;
-}
-#else
-
 u32 agp_collect_device_status(struct agp_bridge_data *bridge, u32 requested_mode, u32 bridge_agpstat)
 {
 	struct pci_dev *device = NULL;
@@ -886,7 +657,6 @@ u32 agp_collect_device_status(struct agp_bridge_data *bridge, u32 requested_mode
 	pci_dev_put(device);
 	return bridge_agpstat;
 }
-#endif
 EXPORT_SYMBOL(agp_collect_device_status);
 
 
@@ -899,11 +669,7 @@ void agp_device_command(u32 bridge_agpstat, int agp_v3)
 	if (agp_v3)
 		mode *= 4;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,11)
 	for_each_pci_dev(device) {
-#else         
-	while ((device = pci_find_device(PCI_ANY_ID, PCI_ANY_ID, device)) != NULL) {
-#endif
 		u8 agp = pci_find_capability(device, PCI_CAP_ID_AGP);
 		if (!agp)
 			continue;
@@ -930,14 +696,9 @@ void get_agp_version(struct agp_bridge_data *bridge)
 }
 EXPORT_SYMBOL(get_agp_version);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-void agp_generic_enable(u32 requested_mode)
-{
-	struct agp_bridge_data *bridge = agp_bridge;
-#else
+
 void agp_generic_enable(struct agp_bridge_data *bridge, u32 requested_mode)
 {
-#endif
 	u32 bridge_agpstat, temp;
 
 	get_agp_version(agp_bridge);
@@ -950,11 +711,7 @@ void agp_generic_enable(struct agp_bridge_data *bridge, u32 requested_mode)
 	pci_read_config_dword(agp_bridge->dev,
 		      agp_bridge->capndx + PCI_AGP_STATUS, &bridge_agpstat);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-	bridge_agpstat = agp_collect_device_status(requested_mode, bridge_agpstat);
-#else
 	bridge_agpstat = agp_collect_device_status(agp_bridge, requested_mode, bridge_agpstat);
-#endif
 	if (bridge_agpstat == 0)
 		/* Something bad happened. FIXME: Return error code? */
 		return;
@@ -988,14 +745,9 @@ void agp_generic_enable(struct agp_bridge_data *bridge, u32 requested_mode)
 }
 EXPORT_SYMBOL(agp_generic_enable);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-int agp_generic_create_gatt_table( void )
-{
-	struct agp_bridge_data *bridge = agp_bridge;
-#else
+
 int agp_generic_create_gatt_table(struct agp_bridge_data *bridge)
 {
-#endif
 	char *table;
 	char *table_end;
 	int size;
@@ -1042,12 +794,7 @@ int agp_generic_create_gatt_table(struct agp_bridge_data *bridge)
 				break;
 			}
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
 			table = alloc_gatt_pages(page_order);
-#else
-			table = (char *) __get_free_pages(GFP_KERNEL,
-                                                          page_order);
-#endif
 
 			if (table == NULL) {
 				i++;
@@ -1061,12 +808,10 @@ int agp_generic_create_gatt_table(struct agp_bridge_data *bridge)
 				case U32_APER_SIZE:
 					bridge->current_size = A_IDX32(bridge);
 					break;
-					/* This case will never really happen. */
+				/* These cases will never really happen. */
 				case FIXED_APER_SIZE:
 				case LVL2_APER_SIZE:
 				default:
-					bridge->current_size =
-					    bridge->current_size;
 					break;
 				}
 				temp = bridge->current_size;
@@ -1078,11 +823,7 @@ int agp_generic_create_gatt_table(struct agp_bridge_data *bridge)
 		size = ((struct aper_size_info_fixed *) temp)->size;
 		page_order = ((struct aper_size_info_fixed *) temp)->page_order;
 		num_entries = ((struct aper_size_info_fixed *) temp)->num_entries;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
 		table = alloc_gatt_pages(page_order);
-#else
-		table = (char *) __get_free_pages(GFP_KERNEL, page_order);
-#endif
 	}
 
 	if (table == NULL)
@@ -1105,11 +846,7 @@ int agp_generic_create_gatt_table(struct agp_bridge_data *bridge)
 		for (page = virt_to_page(table); page <= virt_to_page(table_end); page++)
 			ClearPageReserved(page);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
 		free_gatt_pages(table, page_order);
-#else
-		free_pages((unsigned long) table, page_order);
-#endif
 
 		return -ENOMEM;
 	}
@@ -1125,14 +862,8 @@ int agp_generic_create_gatt_table(struct agp_bridge_data *bridge)
 }
 EXPORT_SYMBOL(agp_generic_create_gatt_table);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-int agp_generic_free_gatt_table( void )
-{
-	struct agp_bridge_data *bridge = agp_bridge;
-#else
 int agp_generic_free_gatt_table(struct agp_bridge_data *bridge)
 {
-#endif
 	int page_order;
 	char *table, *table_end;
 	void *temp;
@@ -1173,11 +904,7 @@ int agp_generic_free_gatt_table(struct agp_bridge_data *bridge)
 	for (page = virt_to_page(table); page <= virt_to_page(table_end); page++)
 		ClearPageReserved(page);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
 	free_gatt_pages(bridge->gatt_table_real, page_order);
-#else
-	free_pages((unsigned long) bridge->gatt_table_real, page_order);
-#endif
 
 	agp_gatt_table = NULL;
 	bridge->gatt_table = NULL;
@@ -1196,12 +923,8 @@ int agp_generic_insert_memory(struct agp_memory * mem, off_t pg_start, int type)
 	off_t j;
 	void *temp;
 	struct agp_bridge_data *bridge;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-	bridge = agp_bridge;
-#else
-	bridge = mem->bridge;
-#endif
 
+	bridge = mem->bridge;
 	if (!bridge)
 		return -EINVAL;
 
@@ -1255,11 +978,7 @@ int agp_generic_insert_memory(struct agp_memory * mem, off_t pg_start, int type)
 	}
 
 	for (i = 0, j = pg_start; i < mem->page_count; i++, j++) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-		writel(bridge->driver->mask_memory(mem->memory[i], mem->type), bridge->gatt_table+j);
-#else
 		writel(bridge->driver->mask_memory(bridge, mem->memory[i], mem->type), bridge->gatt_table+j);
-#endif
 		readl(bridge->gatt_table+j);	/* PCI Posting. */
 	}
 
@@ -1274,11 +993,7 @@ int agp_generic_remove_memory(struct agp_memory *mem, off_t pg_start, int type)
 	size_t i;
 	struct agp_bridge_data *bridge;
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-	bridge = agp_bridge;
-#else
 	bridge = mem->bridge;
-#endif
 	if (!bridge)
 		return -EINVAL;
 
@@ -1323,13 +1038,8 @@ EXPORT_SYMBOL(agp_generic_free_by_type);
  * against a maximum value.
  */
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-void *agp_generic_alloc_page( void )
-{
-#else
 void *agp_generic_alloc_page(struct agp_bridge_data *bridge)
 {
-#endif
 	struct page * page;
 
 	page = alloc_page(GFP_KERNEL);
@@ -1370,29 +1080,18 @@ EXPORT_SYMBOL(agp_generic_destroy_page);
  *
  * @mode:	agp mode register value to configure with.
  */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-void agp_enable(u32 mode)
-{
-	if (agp_bridge->type == NOT_SUPPORTED)
-		return;
-	agp_bridge->driver->agp_enable(mode);
-}
-#else
 void agp_enable(struct agp_bridge_data *bridge, u32 mode)
 {
 	if (!bridge)
 		return;
 	bridge->driver->agp_enable(bridge, mode);
 }
-#endif
-
 EXPORT_SYMBOL(agp_enable);
 
 /* When we remove the global variable agp_bridge from all drivers
  * then agp_alloc_bridge and agp_generic_find_bridge need to be updated
  */
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,12)
 struct agp_bridge_data *agp_generic_find_bridge(struct pci_dev *pdev)
 {
 	if (list_empty(&agp_bridges))
@@ -1400,7 +1099,6 @@ struct agp_bridge_data *agp_generic_find_bridge(struct pci_dev *pdev)
 
 	return agp_bridge;
 }
-#endif
 
 static void ipi_handler(void *null)
 {
@@ -1414,15 +1112,9 @@ void global_cache_flush(void)
 }
 EXPORT_SYMBOL(global_cache_flush);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-unsigned long agp_generic_mask_memory(unsigned long addr, int type)
-{
-	struct agp_bridge_data *bridge = agp_bridge;
-#else
 unsigned long agp_generic_mask_memory(struct agp_bridge_data *bridge,
 	unsigned long addr, int type)
 {
-#endif
 	/* memory type is ignored in the generic routine */
 	if (bridge->driver->masks)
 		return addr | bridge->driver->masks[0].mask;

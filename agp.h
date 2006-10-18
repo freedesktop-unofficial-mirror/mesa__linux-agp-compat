@@ -19,9 +19,9 @@
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * JEFF HARTMANN, OR ANY OTHER CONTRIBUTORS BE LIABLE FOR ANY CLAIM, 
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR 
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE 
+ * JEFF HARTMANN, OR ANY OTHER CONTRIBUTORS BE LIABLE FOR ANY CLAIM,
+ * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+ * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE
  * OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  *
  */
@@ -30,7 +30,6 @@
 #define _AGP_BACKEND_PRIV_H 1
 
 #include <asm/agp.h>	/* for flush_agp_cache() */
-#include <linux/version.h>
 
 #define PFX "agpgart: "
 
@@ -54,7 +53,7 @@ enum aper_size_type {
 struct gatt_mask {
 	unsigned long mask;
 	u32 type;
-	/* totally device specific, for integrated chipsets that 
+	/* totally device specific, for integrated chipsets that
 	 * might have different types of memory masks.  For other
 	 * devices this will probably be ignored */
 };
@@ -92,32 +91,6 @@ struct aper_size_info_fixed {
 	int page_order;
 };
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-struct agp_bridge_driver {
-	struct module *owner;
-	void *aperture_sizes;
-	int num_aperture_sizes;
-	enum aper_size_type size_type;
-	int cant_use_aperture;
-	int needs_scratch_page;
-	struct gatt_mask *masks;
-	int (*fetch_size)(void);
-	int (*configure)(void);
-	void (*agp_enable)(u32);
-	void (*cleanup)(void);
-	void (*tlb_flush)(struct agp_memory *);
-	unsigned long (*mask_memory)(unsigned long, int);
-	void (*cache_flush)(void);
-	int (*create_gatt_table)(void);
-	int (*free_gatt_table)(void);
-	int (*insert_memory)(struct agp_memory *, off_t, int);
-	int (*remove_memory)(struct agp_memory *, off_t, int);
-	struct agp_memory *(*alloc_by_type) (size_t, int);
-	void (*free_by_type)(struct agp_memory *);
-	void *(*agp_alloc_page)(void);
-	void (*agp_destroy_page)(void *);
-};
-#else
 struct agp_bridge_driver {
 	struct module *owner;
 	void *aperture_sizes;
@@ -131,8 +104,7 @@ struct agp_bridge_driver {
 	void (*agp_enable)(struct agp_bridge_data *, u32);
 	void (*cleanup)(void);
 	void (*tlb_flush)(struct agp_memory *);
-	unsigned long (*mask_memory)(struct agp_bridge_data *,
-		unsigned long, int);
+	unsigned long (*mask_memory)(struct agp_bridge_data *, unsigned long, int);
 	void (*cache_flush)(void);
 	int (*create_gatt_table)(struct agp_bridge_data *);
 	int (*free_gatt_table)(struct agp_bridge_data *);
@@ -143,7 +115,6 @@ struct agp_bridge_driver {
 	void *(*agp_alloc_page)(struct agp_bridge_data *);
 	void (*agp_destroy_page)(void *);
 };
-#endif
 
 struct agp_bridge_data {
 	struct agp_version *version;
@@ -167,18 +138,12 @@ struct agp_bridge_data {
 	int max_memory_agp;	/* in number of pages */
 	int aperture_size_idx;
 	int capndx;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-	char major_version;
-	char minor_version;
-#else
 	int flags;
 	char major_version;
 	char minor_version;
 	struct list_head list;
 	u32 apbase_config;
-#endif
 };
-
 
 #define KB(x)	((x) * 1024)
 #define MB(x)	(KB (KB (x)))
@@ -283,38 +248,25 @@ int agp_frontend_initialize(void);
 void agp_frontend_cleanup(void);
 
 /* Generic routines. */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-void agp_generic_enable(u32 mode);
-int agp_generic_create_gatt_table(void);
-int agp_generic_free_gatt_table(void);
-void *agp_generic_alloc_page(void);
-u32 agp_collect_device_status(u32 mode, u32 command);
-unsigned long agp_generic_mask_memory(unsigned long addr, int type);
-#else
 void agp_generic_enable(struct agp_bridge_data *bridge, u32 mode);
 int agp_generic_create_gatt_table(struct agp_bridge_data *bridge);
 int agp_generic_free_gatt_table(struct agp_bridge_data *bridge);
-void *agp_generic_alloc_page(struct agp_bridge_data *bridge);
-u32 agp_collect_device_status(struct agp_bridge_data *bridge, 
-			      u32 mode, u32 command);
-unsigned long agp_generic_mask_memory(struct agp_bridge_data *bridge, 
-				      unsigned long addr, int type);
-
-#endif
-
-
 struct agp_memory *agp_create_memory(int scratch_pages);
 int agp_generic_insert_memory(struct agp_memory *mem, off_t pg_start, int type);
 int agp_generic_remove_memory(struct agp_memory *mem, off_t pg_start, int type);
 struct agp_memory *agp_generic_alloc_by_type(size_t page_count, int type);
 void agp_generic_free_by_type(struct agp_memory *curr);
+void *agp_generic_alloc_page(struct agp_bridge_data *bridge);
 void agp_generic_destroy_page(void *addr);
 void agp_free_key(int key);
 int agp_num_entries(void);
+u32 agp_collect_device_status(struct agp_bridge_data *bridge, u32 mode, u32 command);
 void agp_device_command(u32 command, int agp_v3);
 int agp_3_5_enable(struct agp_bridge_data *bridge);
 void global_cache_flush(void);
 void get_agp_version(struct agp_bridge_data *bridge);
+unsigned long agp_generic_mask_memory(struct agp_bridge_data *bridge,
+	unsigned long addr, int type);
 struct agp_bridge_data *agp_generic_find_bridge(struct pci_dev *pdev);
 
 /* generic functions for user-populated AGP memory types */
@@ -331,13 +283,8 @@ void agp3_generic_cleanup(void);
 #define AGP_GENERIC_SIZES_ENTRIES 11
 extern struct aper_size_info_16 agp3_generic_sizes[];
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-#define virt_to_gart(x) (virt_to_phys(x))
-#define gart_to_virt(x) (phys_to_virt(x))
-#else
 #define virt_to_gart(x) (phys_to_gart(virt_to_phys(x)))
 #define gart_to_virt(x) (phys_to_virt(gart_to_phys(x)))
-#endif
 
 extern int agp_off;
 extern int agp_try_unsupported_boot;
