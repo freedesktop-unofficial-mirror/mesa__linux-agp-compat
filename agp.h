@@ -92,32 +92,6 @@ struct aper_size_info_fixed {
 	int page_order;
 };
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-struct agp_bridge_driver {
-	struct module *owner;
-	void *aperture_sizes;
-	int num_aperture_sizes;
-	enum aper_size_type size_type;
-	int cant_use_aperture;
-	int needs_scratch_page;
-	struct gatt_mask *masks;
-	int (*fetch_size)(void);
-	int (*configure)(void);
-	void (*agp_enable)(u32);
-	void (*cleanup)(void);
-	void (*tlb_flush)(struct agp_memory *);
-	unsigned long (*mask_memory)(unsigned long, int);
-	void (*cache_flush)(void);
-	int (*create_gatt_table)(void);
-	int (*free_gatt_table)(void);
-	int (*insert_memory)(struct agp_memory *, off_t, int);
-	int (*remove_memory)(struct agp_memory *, off_t, int);
-	struct agp_memory *(*alloc_by_type) (size_t, int);
-	void (*free_by_type)(struct agp_memory *);
-	void *(*agp_alloc_page)(void);
-	void (*agp_destroy_page)(void *);
-};
-#else
 struct agp_bridge_driver {
 	struct module *owner;
 	void *aperture_sizes;
@@ -143,7 +117,6 @@ struct agp_bridge_driver {
 	void *(*agp_alloc_page)(struct agp_bridge_data *);
 	void (*agp_destroy_page)(void *);
 };
-#endif
 
 struct agp_bridge_data {
 	struct agp_version *version;
@@ -283,14 +256,6 @@ int agp_frontend_initialize(void);
 void agp_frontend_cleanup(void);
 
 /* Generic routines. */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-void agp_generic_enable(u32 mode);
-int agp_generic_create_gatt_table(void);
-int agp_generic_free_gatt_table(void);
-void *agp_generic_alloc_page(void);
-u32 agp_collect_device_status(u32 mode, u32 command);
-unsigned long agp_generic_mask_memory(unsigned long addr, int type);
-#else
 void agp_generic_enable(struct agp_bridge_data *bridge, u32 mode);
 int agp_generic_create_gatt_table(struct agp_bridge_data *bridge);
 int agp_generic_free_gatt_table(struct agp_bridge_data *bridge);
@@ -300,7 +265,6 @@ u32 agp_collect_device_status(struct agp_bridge_data *bridge,
 unsigned long agp_generic_mask_memory(struct agp_bridge_data *bridge, 
 				      unsigned long addr, int type);
 
-#endif
 
 
 struct agp_memory *agp_create_memory(int scratch_pages);

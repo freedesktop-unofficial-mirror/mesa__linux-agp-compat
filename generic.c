@@ -930,14 +930,8 @@ void get_agp_version(struct agp_bridge_data *bridge)
 }
 EXPORT_SYMBOL(get_agp_version);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-void agp_generic_enable(u32 requested_mode)
-{
-	struct agp_bridge_data *bridge = agp_bridge;
-#else
 void agp_generic_enable(struct agp_bridge_data *bridge, u32 requested_mode)
 {
-#endif
 	u32 bridge_agpstat, temp;
 
 	get_agp_version(agp_bridge);
@@ -988,14 +982,8 @@ void agp_generic_enable(struct agp_bridge_data *bridge, u32 requested_mode)
 }
 EXPORT_SYMBOL(agp_generic_enable);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-int agp_generic_create_gatt_table( void )
-{
-	struct agp_bridge_data *bridge = agp_bridge;
-#else
 int agp_generic_create_gatt_table(struct agp_bridge_data *bridge)
 {
-#endif
 	char *table;
 	char *table_end;
 	int size;
@@ -1125,14 +1113,8 @@ int agp_generic_create_gatt_table(struct agp_bridge_data *bridge)
 }
 EXPORT_SYMBOL(agp_generic_create_gatt_table);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-int agp_generic_free_gatt_table( void )
-{
-	struct agp_bridge_data *bridge = agp_bridge;
-#else
 int agp_generic_free_gatt_table(struct agp_bridge_data *bridge)
 {
-#endif
 	int page_order;
 	char *table, *table_end;
 	void *temp;
@@ -1323,13 +1305,8 @@ EXPORT_SYMBOL(agp_generic_free_by_type);
  * against a maximum value.
  */
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-void *agp_generic_alloc_page( void )
-{
-#else
 void *agp_generic_alloc_page(struct agp_bridge_data *bridge)
 {
-#endif
 	struct page * page;
 
 	page = alloc_page(GFP_KERNEL);
@@ -1375,7 +1352,7 @@ void agp_enable(u32 mode)
 {
 	if (agp_bridge->type == NOT_SUPPORTED)
 		return;
-	agp_bridge->driver->agp_enable(mode);
+	agp_bridge->driver->agp_enable(agp_bridge, mode);
 }
 #else
 void agp_enable(struct agp_bridge_data *bridge, u32 mode)
@@ -1414,15 +1391,9 @@ void global_cache_flush(void)
 }
 EXPORT_SYMBOL(global_cache_flush);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
-unsigned long agp_generic_mask_memory(unsigned long addr, int type)
-{
-	struct agp_bridge_data *bridge = agp_bridge;
-#else
 unsigned long agp_generic_mask_memory(struct agp_bridge_data *bridge,
 	unsigned long addr, int type)
 {
-#endif
 	/* memory type is ignored in the generic routine */
 	if (bridge->driver->masks)
 		return addr | bridge->driver->masks[0].mask;
