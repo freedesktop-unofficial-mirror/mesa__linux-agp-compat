@@ -14,4 +14,9 @@ default:
 endif
 
 clean:
-	rm -f *.o *.ko *.mod.c testgart
+	rm -rf *.o *.ko *.mod.c testgart .*.cmd .tmp_versions
+
+install-agp: FORCE
+	cp agpgart.ko intel-agp.ko /lib/modules/`uname -r`/kernel/drivers/char/agp
+	depmod -ae
+FORCE:
