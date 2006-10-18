@@ -187,6 +187,7 @@ void agp_free_memory(struct agp_memory *curr)
 
 	if (curr->type >= AGP_USER_TYPES) {
 		agp_generic_free_user(curr);
+		return;
 	}
 
 	if (curr->type != 0) {
