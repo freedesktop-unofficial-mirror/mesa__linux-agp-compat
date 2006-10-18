@@ -29,6 +29,17 @@
 #ifndef _AGP_BACKEND_PRIV_H
 #define _AGP_BACKEND_PRIV_H 1
 
+/*
+ * Remove this for kernel update.
+ */
+
+
+#ifndef AGP_USER_TYPES
+#define AGP_USER_TYPES (1 << 16)
+#define AGP_USER_MEMORY (AGP_USER_TYPES)
+#define AGP_USER_CACHED_MEMORY (AGP_USER_TYPES + 1)
+#endif
+
 #include <asm/agp.h>	/* for flush_agp_cache() */
 #include <linux/version.h>
 
@@ -116,6 +127,7 @@ struct agp_bridge_driver {
 	void (*free_by_type)(struct agp_memory *);
 	void *(*agp_alloc_page)(struct agp_bridge_data *);
 	void (*agp_destroy_page)(void *);
+        int (*agp_type_to_mask_type) (struct agp_bridge_data *, int);
 };
 
 struct agp_bridge_data {
@@ -265,8 +277,8 @@ u32 agp_collect_device_status(struct agp_bridge_data *bridge,
 unsigned long agp_generic_mask_memory(struct agp_bridge_data *bridge, 
 				      unsigned long addr, int type);
 
-
-
+int agp_generic_type_to_mask_type(struct agp_bridge_data *bridge,
+ 				  int type);
 struct agp_memory *agp_create_memory(int scratch_pages);
 int agp_generic_insert_memory(struct agp_memory *mem, off_t pg_start, int type);
 int agp_generic_remove_memory(struct agp_memory *mem, off_t pg_start, int type);
@@ -352,4 +364,20 @@ extern int agp_try_unsupported_boot;
 #define AGP_ERRATA_SBA	 1<<1
 #define AGP_ERRATA_1X 1<<2
 
+static inline struct agp_bridge_data *agp_get_bridge(struct agp_memory *curr)
+{
+	struct agp_bridge_data *bridge;
+	
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
+	bridge = agp_bridge;
+	if (bridge->type == NOT_SUPPORTED)
+		return NULL;
+#else
+	if (!curr)
+		return NULL;
+
+	bridge = curr->bridge;
+#endif
+	return bridge;
+}
 #endif	/* _AGP_BACKEND_PRIV_H */
