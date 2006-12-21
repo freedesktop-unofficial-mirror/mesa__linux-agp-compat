@@ -11,12 +11,11 @@ PWD := $(shell pwd)
 default:
 	$(CC) -I. -o testgart testgart.c
 	$(MAKE) -C $(KDIR) SUBDIRS=$(PWD) modules
-endif
-
 clean:
 	rm -rf *.o *.ko *.mod.c testgart .*.cmd .tmp_versions
 
-install-agp: FORCE
-	cp agpgart.ko intel-agp.ko /lib/modules/`uname -r`/kernel/drivers/char/agp
-	depmod -ae
+install: FORCE
+	$(MAKE) -C $(KDIR) SUBDIRS=$(PWD) modules_install	
+endif
+
 FORCE:
