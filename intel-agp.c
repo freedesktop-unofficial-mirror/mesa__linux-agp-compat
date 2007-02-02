@@ -298,6 +298,7 @@ static int intel_i810_insert_entries(struct agp_memory *mem, off_t pg_start,
 		readl(intel_i810_private.registers+I810_PTE_BASE+((i-1)*4));
 		break;
 	case AGP_PHYS_MEMORY:
+	case AGP_NORMAL_MEMORY:
 		if (!mem->is_flushed) 
 			global_cache_flush();
 		for (i = 0, j = pg_start; i < mem->page_count; i++, j++) {
