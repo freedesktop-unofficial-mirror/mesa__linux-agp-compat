@@ -1,0 +1,15 @@
+Compile using 
+>make
+
+Install using (as root)
+>make install
+
+Note that if your kernel uses symbol versioning, after the new AGPGART module
+is intalled, most likely DRM will not load, complaining about missing symbols
+since DRM still uses the old agpgart symbols.
+
+To work around this problem, remove the
+Module.symvers 
+file from the kernel sources. Then recompile and reinstall drm.
+
+
