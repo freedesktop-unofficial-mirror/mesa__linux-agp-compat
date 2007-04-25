@@ -1,15 +1,29 @@
-Compile using 
->make
+Linux AGP GART
 
-Install using (as root)
->make install
 
-Note that if your kernel uses symbol versioning, after the new AGPGART module
-is intalled, most likely DRM will not load, complaining about missing symbols
-since DRM still uses the old agpgart symbols.
+Prerequisites
+-------------
 
-To work around this problem, remove the
-Module.symvers 
-file from the kernel sources. Then recompile and reinstall drm.
+If your current kernel has AGP support compiled in (not a module) you'll
+need to build a new kernel with modular AGP support first.
+
+
+
+Compiling
+---------
+
+Compile with:
+	make
+
+Install (as root):
+	make install
+
+
+Note that if your kernel uses symbol versioning, after the new AGPGART
+module is intalled, most likely DRM will not load, complaining about
+missing symbols since DRM still uses the old agpgart symbols.
+
+To work around this problem, remove the Module.symvers file from the
+kernel sources. Then recompile and reinstall drm.
 
 
