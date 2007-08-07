@@ -4,8 +4,12 @@ Linux AGP GART
 Prerequisites
 -------------
 
-If your current kernel has AGP support compiled in (not a module) you'll
-need to build a new kernel with modular AGP support first.
+This AGP code should not be needed if you have Linux kernel 2.6.21 or later.
+
+Otherwise...
+
+If your current kernel has AGP support compiled in (not a module)
+you'll need to build a new kernel with modular AGP support first.
 
 
 
@@ -34,3 +38,24 @@ or,
 to the kernel's Module.symvers file (i.e. "cat Module.symvers
 >> /usr/src/kernels/2.6.x/Module.symvers") before rebuilding the DRM.
 
+or,
+
+3. The following shell script can be used to replace the agp-related symbols
+in your Module.symvers file (contributed by Sergio M. Bast):
+
+#!/bin/bash
+cat Module.symvers  | perl -pe 's/.{11}(\w+).*/\1/' | xargs | perl -pe 's/ /\\s|\\s/g' > tmp1 
+echo "cat /usr/src/kernels/`uname -r`-i686/Module.symvers | grep -vP \"\\s`cat tmp1`\\s\"" >  cm 
+(sh cm; cat Module.symvers ) > Module.symvers2
+echo diff -up /usr/src/kernels/`uname -r`-i686/Module.symvers Module.symvers2 
+echo \#if ok
+echo cp Module.symvers2 /usr/src/kernels/`uname -r`-i686/Module.symvers
+
+
+
+Installing
+----------
+
+To install the kernel modules in your kernel modules directory:
+
+cp agpgart.ko intel-agp.ko /lib/modules/`uname -r`/kernel/drivers/char/agp/
