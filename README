@@ -59,3 +59,6 @@ Installing
 To install the kernel modules in your kernel modules directory:
 
 cp agpgart.ko intel-agp.ko /lib/modules/`uname -r`/kernel/drivers/char/agp/
+depmod -a
+
+
